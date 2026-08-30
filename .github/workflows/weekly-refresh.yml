@@ -1,0 +1,49 @@
+name: Weekly Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 5 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'template.html'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Pull fresh CFBD data
+        env:
+          CFBD_API_KEY: ${{ secrets.CFBD_API_KEY }}
+        run: python scripts/pull_cfbd.py --out ./project --years 2025,2026
+
+      - name: Rebuild index.html
+        run: python scripts/refresh.py --project ./project --metrics ./project/sooner_stats_all_teams_metrics.csv --template ./template.html --out ./index.html
+
+      - name: Commit and push updates
+        run: |
+          git config user.name "sooner-stats-bot"
+          git config user.email "bot@sooner-stats.local"
+          git add index.html project/
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Weekly refresh $(date -u +%Y-%m-%d)"
+            git push
+          fi
