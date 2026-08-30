@@ -7,12 +7,15 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/**'
-      - 'template.html'
+      - 'sooner-stats-cheat-sheet/sooner-stats-cheat-sheet/scripts/**'
+      - 'sooner-stats-cheat-sheet/sooner-stats-cheat-sheet/template.html'
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./sooner-stats-cheat-sheet/sooner-stats-cheat-sheet
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -37,10 +40,11 @@ jobs:
         run: python scripts/refresh.py --project ./project --metrics ./project/sooner_stats_all_teams_metrics.csv --template ./template.html --out ./index.html
 
       - name: Commit and push updates
+        working-directory: .
         run: |
           git config user.name "sooner-stats-bot"
           git config user.email "bot@sooner-stats.local"
-          git add index.html project/
+          git add sooner-stats-cheat-sheet/sooner-stats-cheat-sheet/index.html sooner-stats-cheat-sheet/sooner-stats-cheat-sheet/project/
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
