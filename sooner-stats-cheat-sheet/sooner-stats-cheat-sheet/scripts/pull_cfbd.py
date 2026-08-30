@@ -1,19 +1,6 @@
 #!/usr/bin/env python3
 """
 Sooner Stats — CFBD Data Pull
-Pulls fresh CFBD CSVs into your project directory.
-
-USAGE:
-    export CFBD_API_KEY="your_key_here"
-    python pull_cfbd.py                          # pulls current-week essentials
-    python pull_cfbd.py --full                   # pulls everything
-    python pull_cfbd.py --out ./project          # custom output dir
-
-Get a free API key at collegefootballdata.com.
-
-Skips files by category:
-    --essential (default): ratings, games, advanced stats, CORE, schedule
-    --full: everything (players, rosters, portal, recruits, etc.)
 """
 
 import argparse
@@ -30,7 +17,6 @@ CFBD_BASE = 'https://apinext.collegefootballdata.com'
 
 
 def _norm(records):
-    """Flatten CFBD's nested JSON to flat dict rows."""
     def flatten(obj, prefix=''):
         out = {}
         if isinstance(obj, dict):
@@ -56,16 +42,35 @@ class CFBDClient:
 
     def get(self, path, **params):
         params = {k: v for k, v in params.items() if v is not None}
-        try:
-            r = self.session.get(f'{CFBD_BASE}{path}', headers=self.headers, params=params, timeout=60)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.HTTPError as e:
-            print(f"  ! HTTP {r.status_code} on {path}: {e}", file=sys.stderr)
-            return []
-        except Exception as e:
-            print(f"  ! Error on {path}: {e}", file=sys.stderr)
-            return []
+        # Retry logic for 429s (rate limiting) and 5xx (server errors)
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                r = self.session.get(f'{CFBD_BASE}{path}', headers=self.headers, params=params, timeout=60)
+                if r.status_code == 429:
+                    # Rate limited — respect Retry-After header if present, else exponential backoff
+                    wait = int(r.headers.get('Retry-After', 2 ** (attempt + 3)))
+                    print(f"  ⏳ 429 on {path}, waiting {wait}s (attempt {attempt+1}/{max_retries})", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+                if r.status_code >= 500:
+                    wait = 2 ** (attempt + 2)
+                    print(f"  ⏳ {r.status_code} on {path}, waiting {wait}s (attempt {attempt+1}/{max_retries})", file=sys.stderr)
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                return r.json()
+            except requests.exceptions.HTTPError as e:
+                print(f"  ! HTTP {r.status_code} on {path}: {e}", file=sys.stderr)
+                return []
+            except Exception as e:
+                print(f"  ! Error on {path}: {e}", file=sys.stderr)
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** (attempt + 2))
+                    continue
+                return []
+        print(f"  ! Gave up on {path} after {max_retries} attempts", file=sys.stderr)
+        return []
 
 
 ESSENTIAL_FILES = {
@@ -79,11 +84,9 @@ ESSENTIAL_FILES = {
     'team_records.csv': lambda c, yr: c.get('/records', year=yr),
 }
 
-# CORE isn't in the standard CFBD API — placeholder. Skip if endpoint 404s.
 def fetch_core(c, yr):
     return c.get('/ratings/core', year=yr)
 
-# Extras (slower cadence)
 EXTRA_FILES = {
     'teams_ats.csv': lambda c, yr: c.get('/records/ats', year=yr),
     'rankings.csv': lambda c, yr: c.get('/rankings', year=yr),
@@ -99,16 +102,16 @@ EXTRA_FILES = {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--out', default='./project', help='Output CSV dir')
-    ap.add_argument('--years', default='2025,2026', help='Years to pull (comma-separated)')
-    ap.add_argument('--full', action='store_true', help='Pull player/roster/coach files too')
-    ap.add_argument('--historical', action='store_true', help='Pull 2019-2026 for calibration rebuild')
+    ap.add_argument('--out', default='./project')
+    ap.add_argument('--years', default='2025,2026')
+    ap.add_argument('--full', action='store_true')
+    ap.add_argument('--historical', action='store_true')
+    ap.add_argument('--delay', type=float, default=2.0, help='Seconds between requests')
     args = ap.parse_args()
 
     api_key = os.environ.get('CFBD_API_KEY')
     if not api_key:
         print("ERROR: set CFBD_API_KEY environment variable")
-        print("Get one at https://collegefootballdata.com")
         sys.exit(1)
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
@@ -117,13 +120,13 @@ def main():
         years = list(range(2019, 2027))
 
     client = CFBDClient(api_key)
+    delay = args.delay
 
-    # Multi-year files: accumulate rows across years
     def pull_multiyear(name, fn):
         print(f"→ {name}")
         all_rows = []
         for yr in years:
-            time.sleep(0.5)  # be nice to the API
+            time.sleep(delay)
             data = fn(client, yr)
             if data:
                 all_rows.extend(data)
@@ -135,16 +138,14 @@ def main():
         else:
             print(f"  ! no data returned")
 
-    # Pull essentials
     for name, fn in ESSENTIAL_FILES.items():
         pull_multiyear(name, fn)
 
-    # CORE (may not exist on CFBD — user has as separate file)
     print("→ core.csv (attempting CFBD endpoint; may not exist)")
     try:
         all_core = []
         for yr in years:
-            time.sleep(0.5)
+            time.sleep(delay)
             data = fetch_core(client, yr)
             if data:
                 all_core.extend(data)
