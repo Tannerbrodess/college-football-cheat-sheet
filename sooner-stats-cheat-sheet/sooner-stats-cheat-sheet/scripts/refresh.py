@@ -93,6 +93,24 @@ def load_csvs(project_dir):
             df = pd.read_csv(p / f)
             data[f.replace('.csv','')] = df
 
+    # Normalize CFBD API camelCase field names to snake_case
+    camel_to_snake = {
+        'homeTeam': 'home_team',
+        'awayTeam': 'away_team',
+        'homePoints': 'home_points',
+        'awayPoints': 'away_points',
+        'neutralSite': 'neutral_site',
+        'seasonType': 'season_type',
+        'homeConference': 'home_conference',
+        'awayConference': 'away_conference',
+        'homeClassification': 'home_classification',
+        'awayClassification': 'away_classification',
+    }
+    for name in list(data.keys()):
+        renames = {k: v for k, v in camel_to_snake.items() if k in data[name].columns}
+        if renames:
+            data[name] = data[name].rename(columns=renames)
+
     # Normalize CORE: rename year -> season if needed, check required columns exist
     if 'core' in data:
         df = data['core']
