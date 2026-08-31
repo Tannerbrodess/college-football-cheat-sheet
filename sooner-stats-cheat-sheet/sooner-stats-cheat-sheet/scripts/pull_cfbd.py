@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Sooner Stats — CFBD Data Pull
-"""
+"""Sooner Stats — CFBD Data Pull (rate-limit friendly)"""
 
 import argparse
 import os
@@ -36,29 +34,33 @@ def _norm(records):
 
 
 class CFBDClient:
-    def __init__(self, api_key):
+    def __init__(self, api_key, base_delay=3.0):
         self.headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
         self.session = requests.Session()
+        self.base_delay = base_delay
+        self.consecutive_429s = 0
 
     def get(self, path, **params):
         params = {k: v for k, v in params.items() if v is not None}
-        # Retry logic for 429s (rate limiting) and 5xx (server errors)
-        max_retries = 5
+        max_retries = 4
         for attempt in range(max_retries):
             try:
+                sleep_time = self.base_delay + (self.consecutive_429s * 5)
+                if attempt == 0:
+                    time.sleep(sleep_time)
                 r = self.session.get(f'{CFBD_BASE}{path}', headers=self.headers, params=params, timeout=60)
                 if r.status_code == 429:
-                    # Rate limited — respect Retry-After header if present, else exponential backoff
-                    wait = int(r.headers.get('Retry-After', 2 ** (attempt + 3)))
-                    print(f"  ⏳ 429 on {path}, waiting {wait}s (attempt {attempt+1}/{max_retries})", file=sys.stderr)
+                    self.consecutive_429s += 1
+                    wait = int(r.headers.get('Retry-After', 30 * (attempt + 1)))
+                    print(f"  ⏳ 429 on {path} (attempt {attempt+1}/{max_retries}), waiting {wait}s", file=sys.stderr)
                     time.sleep(wait)
                     continue
                 if r.status_code >= 500:
-                    wait = 2 ** (attempt + 2)
-                    print(f"  ⏳ {r.status_code} on {path}, waiting {wait}s (attempt {attempt+1}/{max_retries})", file=sys.stderr)
+                    wait = 10 * (attempt + 1)
                     time.sleep(wait)
                     continue
                 r.raise_for_status()
+                self.consecutive_429s = 0
                 return r.json()
             except requests.exceptions.HTTPError as e:
                 print(f"  ! HTTP {r.status_code} on {path}: {e}", file=sys.stderr)
@@ -66,13 +68,17 @@ class CFBDClient:
             except Exception as e:
                 print(f"  ! Error on {path}: {e}", file=sys.stderr)
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** (attempt + 2))
+                    time.sleep(15)
                     continue
                 return []
-        print(f"  ! Gave up on {path} after {max_retries} attempts", file=sys.stderr)
+        if self.consecutive_429s >= 6:
+            print(f"\n!!! Aborting: {self.consecutive_429s} consecutive rate limits.", file=sys.stderr)
+            sys.exit(2)
         return []
 
 
+# NOTE: CORE is NOT fetched — the CFBD /ratings/core endpoint returns a different schema
+# than the model expects. Keep the existing core.csv in project/ (computed externally by your metrics pipeline).
 ESSENTIAL_FILES = {
     'ratings_sp.csv': lambda c, yr: c.get('/ratings/sp', year=yr),
     'ratings_fpi.csv': lambda c, yr: c.get('/ratings/fpi', year=yr),
@@ -84,19 +90,12 @@ ESSENTIAL_FILES = {
     'team_records.csv': lambda c, yr: c.get('/records', year=yr),
 }
 
-def fetch_core(c, yr):
-    return c.get('/ratings/core', year=yr)
 
 EXTRA_FILES = {
-    'teams_ats.csv': lambda c, yr: c.get('/records/ats', year=yr),
-    'rankings.csv': lambda c, yr: c.get('/rankings', year=yr),
     'coaches.csv': lambda c, yr: c.get('/coaches', year=yr),
     'rosters.csv': lambda c, yr: c.get('/roster', year=yr),
     'player_ppa_season.csv': lambda c, yr: c.get('/ppa/players/season', year=yr),
     'player_usage.csv': lambda c, yr: c.get('/player/usage', year=yr),
-    'talent.csv': lambda c, yr: c.get('/talent', year=yr),
-    'clean_metrics.csv': lambda c, yr: c.get('/stats/season', year=yr),
-    'team_ppa_season.csv': lambda c, yr: c.get('/ppa/teams', year=yr),
 }
 
 
@@ -105,8 +104,7 @@ def main():
     ap.add_argument('--out', default='./project')
     ap.add_argument('--years', default='2025,2026')
     ap.add_argument('--full', action='store_true')
-    ap.add_argument('--historical', action='store_true')
-    ap.add_argument('--delay', type=float, default=2.0, help='Seconds between requests')
+    ap.add_argument('--delay', type=float, default=3.0)
     args = ap.parse_args()
 
     api_key = os.environ.get('CFBD_API_KEY')
@@ -116,46 +114,31 @@ def main():
 
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     years = [int(y.strip()) for y in args.years.split(',')]
-    if args.historical:
-        years = list(range(2019, 2027))
-
-    client = CFBDClient(api_key)
-    delay = args.delay
+    client = CFBDClient(api_key, base_delay=args.delay)
 
     def pull_multiyear(name, fn):
         print(f"→ {name}")
         all_rows = []
         for yr in years:
-            time.sleep(delay)
             data = fn(client, yr)
             if data:
                 all_rows.extend(data)
-                print(f"  {yr}: {len(data)} rows")
+                print(f"  ✓ {yr}: {len(data)} rows")
         if all_rows:
             df = pd.DataFrame(_norm(all_rows))
             df.to_csv(out / name, index=False)
             print(f"  saved: {out/name} ({len(df)} total)")
         else:
-            print(f"  ! no data returned")
+            print(f"  ! no data returned — keeping existing {name} if present")
 
     for name, fn in ESSENTIAL_FILES.items():
         pull_multiyear(name, fn)
 
-    print("→ core.csv (attempting CFBD endpoint; may not exist)")
-    try:
-        all_core = []
-        for yr in years:
-            time.sleep(delay)
-            data = fetch_core(client, yr)
-            if data:
-                all_core.extend(data)
-        if all_core:
-            pd.DataFrame(_norm(all_core)).to_csv(out / 'core.csv', index=False)
-            print("  saved")
-        else:
-            print("  ! CORE endpoint returned nothing — will use existing core.csv if present")
-    except Exception as e:
-        print(f"  ! CORE unavailable: {e}")
+    # CORE intentionally not fetched — keep existing core.csv
+    if (out / 'core.csv').exists():
+        print("→ core.csv (kept as-is from your metrics pipeline)")
+    else:
+        print("! core.csv is not present in project/ — model will run without CORE (4-system composite)")
 
     if args.full:
         print("\n--- Pulling extras (--full mode) ---")
