@@ -90,7 +90,26 @@ def load_csvs(project_dir):
     data = {}
     for f in required + optional:
         if (p / f).exists():
-            data[f.replace('.csv','')] = pd.read_csv(p / f)
+            df = pd.read_csv(p / f)
+            data[f.replace('.csv','')] = df
+
+    # Normalize CORE: rename year -> season if needed, check required columns exist
+    if 'core' in data:
+        df = data['core']
+        if 'year' in df.columns and 'season' not in df.columns:
+            df = df.rename(columns={'year': 'season'})
+        required_core_cols = {'season', 'team', 'core_overall'}
+        if not required_core_cols.issubset(set(df.columns)):
+            log(f"WARNING: core.csv missing columns {required_core_cols - set(df.columns)} — dropping CORE from composite")
+            del data['core']
+        else:
+            # Fill missing offense/defense with overall so downstream code doesn't break
+            if 'core_offense' not in df.columns:
+                df['core_offense'] = df['core_overall']
+            if 'core_defense' not in df.columns:
+                df['core_defense'] = df['core_overall']
+            data['core'] = df
+
     log(f"Loaded {len(data)} CSVs from {project_dir}")
     return data
 
@@ -145,8 +164,10 @@ def build_calibration(data, project_dir):
     from sklearn.linear_model import LinearRegression
 
     sp = data['ratings_sp']; fpi = data['ratings_fpi']; elo = data['ratings_elo']
-    srs = data['ratings_srs']; core = data['core']; games = data['games']
+    srs = data['ratings_srs']; games = data['games']
+    core = data.get('core')  # optional
 
+    have_core = core is not None
     def build_year_ratings(year):
         prev = year - 1
         dfs = {
@@ -154,12 +175,15 @@ def build_calibration(data, project_dir):
             'fpi': fpi[fpi['year']==prev][['team','fpi']],
             'elo': elo[elo['year']==prev][['team','elo']],
             'srs': srs[srs['year']==prev][['team','rating']].rename(columns={'rating':'srs'}),
-            'core': core[core['season']==prev][['team','core_overall']],
         }
+        if have_core:
+            dfs['core'] = core[core['season']==prev][['team','core_overall']]
         base = dfs['sp']
-        for k in ['fpi','elo','srs','core']:
+        merge_keys = ['fpi','elo','srs'] + (['core'] if have_core else [])
+        for k in merge_keys:
             base = base.merge(dfs[k], on='team', how='outer')
-        for c in ['sp','fpi','elo','srs','core_overall']:
+        cols = ['sp','fpi','elo','srs'] + (['core_overall'] if have_core else [])
+        for c in cols:
             m = base[c].mean(); s = base[c].std()
             base['z_'+c] = (base[c]-m)/s
         zcols = [c for c in base.columns if c.startswith('z_')]
@@ -231,7 +255,8 @@ def build_calibration(data, project_dir):
 def build_power_ratings(data, metrics_df, mode, calib, hfa):
     """Build 2026 power ratings. Preseason: adjustments applied. In-season: current-year composite direct."""
     sp = data['ratings_sp']; fpi = data['ratings_fpi']; elo = data['ratings_elo']
-    srs = data['ratings_srs']; core = data['core']
+    srs = data['ratings_srs']
+    core = data.get('core')  # may be None
     weights = CFG['composite_weights']
     ps = CFG['projection_season']
 
@@ -248,21 +273,37 @@ def build_power_ratings(data, metrics_df, mode, calib, hfa):
     fpi_src = fpi[fpi['year']==source_year][['team','fpi']]
     elo_src = elo[elo['year']==source_year][['team','elo']]
     srs_src = srs[srs['year']==source_year][['team','rating']].rename(columns={'rating':'srs'})
-    core_src = core[core['season']==source_year][['team','core_overall','core_offense','core_defense']]
+    if core is not None:
+        core_src = core[core['season']==source_year][['team','core_overall','core_offense','core_defense']]
+    else:
+        core_src = None
 
     base = sp_src.merge(fpi_src,on='team',how='left').merge(elo_src,on='team',how='left'
-              ).merge(srs_src,on='team',how='left').merge(core_src,on='team',how='left')
+              ).merge(srs_src,on='team',how='left')
+    if core_src is not None:
+        base = base.merge(core_src, on='team', how='left')
+    else:
+        base['core_overall'] = np.nan
+        base['core_offense'] = np.nan
+        base['core_defense'] = np.nan
 
     if len(base) < 50:
         raise ValueError(f"Only {len(base)} teams found for source year {source_year}. Aborting.")
 
     def zsc(s): return (s - s.mean()) / s.std()
-    for c in ['sp','fpi','elo','srs','core_overall']:
+    have_core_data = core is not None and base['core_overall'].notna().sum() > 50
+    z_cols = ['sp','fpi','elo','srs'] + (['core_overall'] if have_core_data else [])
+    for c in z_cols:
         base['z_'+c] = zsc(base[c])
 
     # Weighted composite
-    zsum = sum(base['z_'+c]*weights[c.replace('core_overall','core')] for c in ['sp','fpi','elo','srs','core_overall'])
-    wsum = sum(weights.values())
+    active_weights = {k: weights[k] for k in ['sp','fpi','elo','srs']}
+    if have_core_data:
+        active_weights['core'] = weights['core']
+    else:
+        log("WARNING: CORE data not present or too sparse — building composite from SP+/FPI/Elo/SRS only")
+    zsum = sum(base['z_'+c]*active_weights[c.replace('core_overall','core')] for c in z_cols)
+    wsum = sum(active_weights.values())
     base['z_comp'] = zsum / wsum
     sp_mean, sp_std = base['sp'].mean(), base['sp'].std()
     base['power_raw'] = base['z_comp']*sp_std + sp_mean
