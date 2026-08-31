@@ -78,10 +78,10 @@ def load_csvs(project_dir):
     """Load all needed CSVs from project directory. Missing files gracefully skipped."""
     p = Path(project_dir)
     required = ['ratings_sp.csv','ratings_fpi.csv','ratings_elo.csv','ratings_srs.csv',
-                'games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
+                'core.csv','games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
                 'team_records.csv','coaches.csv','rosters.csv',
                 'player_ppa_season.csv','player_usage.csv']
-    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv','core.csv']
+    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv']
 
     missing = [f for f in required if not (p / f).exists()]
     if missing:
@@ -92,24 +92,6 @@ def load_csvs(project_dir):
         if (p / f).exists():
             df = pd.read_csv(p / f)
             data[f.replace('.csv','')] = df
-
-    # Normalize CFBD API camelCase field names to snake_case
-    camel_to_snake = {
-        'homeTeam': 'home_team',
-        'awayTeam': 'away_team',
-        'homePoints': 'home_points',
-        'awayPoints': 'away_points',
-        'neutralSite': 'neutral_site',
-        'seasonType': 'season_type',
-        'homeConference': 'home_conference',
-        'awayConference': 'away_conference',
-        'homeClassification': 'home_classification',
-        'awayClassification': 'away_classification',
-    }
-    for name in list(data.keys()):
-        renames = {k: v for k, v in camel_to_snake.items() if k in data[name].columns}
-        if renames:
-            data[name] = data[name].rename(columns=renames)
 
     # Normalize CORE: rename year -> season if needed, check required columns exist
     if 'core' in data:
@@ -221,6 +203,17 @@ def build_calibration(data, project_dir):
                 margin = r['home_points'] - r['away_points']
                 hfa_pairs.append({'team': r['home_team'], 'residual': margin - diff})
     hdf = pd.DataFrame(hfa_pairs)
+    if len(hdf) == 0:
+        log("WARNING: no historical games available for calibration. Using defaults.")
+        log("Recommendation: commit _calibration.json, _team_hfa.json, _spread_lookup.json to project/")
+        calib = {'scale': CFG['default_scale'], 'league_hfa': CFG['default_league_hfa'],
+                 'logloss': None, 'brier': None, 'accuracy': None, 'n_games': 0}
+        hfa = {'league_mean': CFG['default_league_hfa'], 'per_team': {}}
+        lookup_dict = {}
+        with open(calib_path,'w') as f: json.dump(calib, f, indent=2)
+        with open(hfa_path,'w') as f: json.dump(hfa, f)
+        with open(lookup_path,'w') as f: json.dump(lookup_dict, f)
+        return calib, hfa, lookup_dict
     league_hfa = float(hdf['residual'].mean())
     team_hfa = hdf.groupby('team').agg(n=('residual','size'), hfa=('residual','mean')).reset_index()
     team_hfa = team_hfa[team_hfa['n'] >= 20].copy()
