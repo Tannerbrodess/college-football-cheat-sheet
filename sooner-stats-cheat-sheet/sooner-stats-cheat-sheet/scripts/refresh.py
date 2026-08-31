@@ -79,9 +79,9 @@ def load_csvs(project_dir):
     p = Path(project_dir)
     required = ['ratings_sp.csv','ratings_fpi.csv','ratings_elo.csv','ratings_srs.csv',
                 'core.csv','games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
-                'team_records.csv','teams_ats.csv','coaches.csv','rosters.csv',
+                'team_records.csv','coaches.csv','rosters.csv',
                 'player_ppa_season.csv','player_usage.csv']
-    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv']
+    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv']
 
     missing = [f for f in required if not (p / f).exists()]
     if missing:
@@ -674,7 +674,6 @@ def build_trends(data, teams_dict, metrics_df):
     usage = data['player_usage']
     rosters = data['rosters']
     games = data['games']
-    ats = data['teams_ats']
     ps = CFG['projection_season']
     fbs = set(teams_dict.keys())
 
@@ -756,13 +755,17 @@ def build_trends(data, teams_dict, metrics_df):
                               'talent_rank':int(r['talent_top40_rank']) if pd.notna(r['talent_top40_rank']) else None}
                              for _,r in unders.iterrows()]
 
-    ats_prev = ats[ats['year']==ps-1].sort_values('avgCoverMargin',ascending=False)
-    ats_leaders = [{'team':r['team'],'conf':r['conference'],'w':int(r['atsWins']),'l':int(r['atsLosses']),
-                    'margin':round(float(r['avgCoverMargin']),1)}
-                   for _,r in ats_prev.head(10).iterrows() if r['team'] in fbs]
-    ats_losers = [{'team':r['team'],'conf':r['conference'],'w':int(r['atsWins']),'l':int(r['atsLosses']),
-                   'margin':round(float(r['avgCoverMargin']),1)}
-                  for _,r in ats_prev.tail(10).iloc[::-1].iterrows() if r['team'] in fbs]
+    ats_leaders = []
+    ats_losers = []
+    if 'teams_ats' in data:
+        ats = data['teams_ats']
+        ats_prev = ats[ats['year']==ps-1].sort_values('avgCoverMargin',ascending=False)
+        ats_leaders = [{'team':r['team'],'conf':r['conference'],'w':int(r['atsWins']),'l':int(r['atsLosses']),
+                        'margin':round(float(r['avgCoverMargin']),1)}
+                       for _,r in ats_prev.head(10).iterrows() if r['team'] in fbs]
+        ats_losers = [{'team':r['team'],'conf':r['conference'],'w':int(r['atsWins']),'l':int(r['atsLosses']),
+                       'margin':round(float(r['avgCoverMargin']),1)}
+                      for _,r in ats_prev.tail(10).iloc[::-1].iterrows() if r['team'] in fbs]
 
     return {'top_qbs':top_qbs,'top_skill':top_skill,'top_transfers':top_transfers,
             'form_risers':risers,'form_faders':faders,
