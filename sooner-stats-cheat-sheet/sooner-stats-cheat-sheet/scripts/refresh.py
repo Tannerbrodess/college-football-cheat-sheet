@@ -78,10 +78,10 @@ def load_csvs(project_dir):
     """Load all needed CSVs from project directory. Missing files gracefully skipped."""
     p = Path(project_dir)
     required = ['ratings_sp.csv','ratings_fpi.csv','ratings_elo.csv','ratings_srs.csv',
-                'core.csv','games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
+                'games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
                 'team_records.csv','coaches.csv','rosters.csv',
                 'player_ppa_season.csv','player_usage.csv']
-    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv']
+    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv','core.csv']
 
     missing = [f for f in required if not (p / f).exists()]
     if missing:
