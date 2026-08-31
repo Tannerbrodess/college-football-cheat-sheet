@@ -1,0 +1,8 @@
+{
+  "scale": 11.544,
+  "league_hfa": 4.47,
+  "logloss": 0.5765,
+  "brier": 0.1977,
+  "accuracy": 0.6892,
+  "n_games": 5608
+}
