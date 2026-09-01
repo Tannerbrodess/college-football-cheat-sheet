@@ -78,10 +78,10 @@ def load_csvs(project_dir):
     """Load all needed CSVs from project directory. Missing files gracefully skipped."""
     p = Path(project_dir)
     required = ['ratings_sp.csv','ratings_fpi.csv','ratings_elo.csv','ratings_srs.csv',
-                'core.csv','games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
+                'games.csv','clean_advanced.csv','cfb_2026_schedule.csv',
                 'team_records.csv','coaches.csv','rosters.csv',
                 'player_ppa_season.csv','player_usage.csv']
-    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv']
+    optional = ['team_ppa_season.csv','clean_metrics.csv','rankings.csv','teams_ats.csv','core.csv']
 
     missing = [f for f in required if not (p / f).exists()]
     if missing:
@@ -451,7 +451,7 @@ def merge_advanced(base, data, mode):
     """Add PPA/success/explosive/havoc/etc. stats for the CURRENT display year."""
     adv = data['clean_advanced']
     tr = data['team_records']
-    ats_df = data['teams_ats']
+    ats_df = data.get('teams_ats')  # optional
     display_year = CFG['projection_season'] if mode == 'inseason' else CFG['base_season']
 
     adv_disp = adv[adv['season']==display_year]
@@ -467,8 +467,12 @@ def merge_advanced(base, data, mode):
     tr_disp = tr[tr['year']==display_year][['team','total_wins','total_losses']].rename(
         columns={'total_wins':'w25','total_losses':'l25'})
     base = base.merge(tr_disp, on='team', how='left')
-    ats_disp = ats_df[ats_df['year']==display_year][['team','atsWins','atsLosses','atsPushes','avgCoverMargin']]
-    base = base.merge(ats_disp, on='team', how='left')
+    if ats_df is not None:
+        ats_disp = ats_df[ats_df['year']==display_year][['team','atsWins','atsLosses','atsPushes','avgCoverMargin']]
+        base = base.merge(ats_disp, on='team', how='left')
+    else:
+        for c in ['atsWins','atsLosses','atsPushes','avgCoverMargin']:
+            base[c] = np.nan
 
     def add_rank(df, col, asc=False, name=None):
         df[name or (col+'_rank')] = df[col].rank(ascending=asc, method='min')
